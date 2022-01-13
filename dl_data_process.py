@@ -1,45 +1,62 @@
 import logging
 import os
-import sys
 import shutil
-import tensorflow as tf
-import numpy as np
-import common
-import matplotlib.pyplot as plt
+import sys
+from os import path
 
+import matplotlib.pyplot as plt
+import numpy as np
+import tensorflow as tf
+
+import common
 from captcha import CaptchaManager
 from config import Config
 from dl_config import DLTrainConfig
-from os import path
-from PIL import Image
+
+
+def label2int_tensor(label: str) -> tf.Tensor:
+    chars = DLTrainConfig.characters
+    st_list = []
+    label = label + '=?'
+    for s in label:
+        s_index = chars.index(s)
+        st_list.append(s_index)
+    return tf.convert_to_tensor(st_list, dtype=tf.float32)
+
+
+def ints_to_label_chars(indices: tf.Tensor) -> tf.Tensor:
+    l = []
+    for index in indices:
+        if index < len(DLTrainConfig.characters):
+            l.append(DLTrainConfig.characters[int(index.numpy())])
+        else:
+            l.append(DLTrainConfig.characters[-1])  # '[UNK]'
+    return tf.convert_to_tensor(l, dtype=tf.string)
 
 
 def label2vec(label: str) -> tf.Tensor:
     """"
-    将验证码标签转为24维的向量，后置操作符。
-    :param label: 3*7
+    将验证码标签转为5 * 17维的向量，
+    :param label: 3*7=?
     :return:
-    [0,0,0,1,0,0,0,0,0,0,
-     0,0,0,0,0,0,0,7,0,0,
-     0,0,1,0] // 按照+ - * /的顺序
+    [0,0,0,1,0,0,0,0,0,0,0,0,0,0,0,0,0
+     0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+     0,0,0,0,0,0,0,1,0,0,0,0,0,0,0,0,0
+     0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0  // 固定为=
+     0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0] // 固定为?
      """
-    label_vec = np.zeros(24)
-    left_num_idx = int(label[0])
-    right_num_idx = 10 + int(label[2])
-    op_idx = 20 + DLTrainConfig.op_map[label[1]]
-    label_vec[left_num_idx] = 1
-    label_vec[right_num_idx] = 1
-    label_vec[op_idx] = 1
+    label_vec = np.zeros(5 * len(DLTrainConfig.characters))
+    for idx, c in enumerate(label):
+        label_vec[len(DLTrainConfig.characters) * idx + DLTrainConfig.characters.index(c)] = 1
+    label_vec[3 * len(DLTrainConfig.characters) + DLTrainConfig.characters.index('=')] = 1
+    label_vec[4 * len(DLTrainConfig.characters) + DLTrainConfig.characters.index('?')] = 1
     return tf.convert_to_tensor(label_vec)
 
 
 def vec2label(vec: tf.Tensor) -> str:
     label = ''
     for idx in np.nonzero(vec.numpy()):
-        if idx < 20:
-            label += str(idx % 10)
-        else:
-            label += str(DLTrainConfig.op_map_inverted[idx - 20])
+        label += str(DLTrainConfig.characters[idx % len(DLTrainConfig.characters)])
     return label
 
 
@@ -87,54 +104,45 @@ class DataLoader:
         self.test_images = os.listdir(DLTrainConfig.test_dir_path)
         self.train_images = os.listdir(DLTrainConfig.train_dir_path)
         self.sample_num = len(self.train_images)
-
-    def read_data(self, p: str):
-        img = Image.open(p).convert('L')
-        image_array = np.array(img)
-        image_data = image_array.flatten() / 255.0
-        # 切割图片路径
-        image_name = path.basename(p)
-        _, label, _ = self.captcha_mgr.decode_labeled_image_filename(image_name)
-        label_vec = label2vec(label)
-        return image_data, label_vec
+        self.char_to_num = None
+        self.num_to_char = None
 
     @classmethod
-    def preprocess_image(cls, image, preprocess_func=None):
+    def preprocess_image(cls, image):
         image = tf.image.decode_jpeg(image, channels=1)
-        # image = tf.expand_dims(image[:, :, 1], -1)
-        # print(image.shape)
         tf.image.resize(image, [DLTrainConfig.height, DLTrainConfig.width])
         image = tf.where(image > 50, 255, 0)
         image = tf.transpose(image, perm=[1, 0, 2])
-        if preprocess_func is None:
-            image /= 255  # normalize to [0,1] range
-        else:
-            image = preprocess_func(image)
+        image /= 255
         return image
 
     @classmethod
-    def load_and_preprocess_image(cls, image_path, preprocess_image_func: None):
+    def load_and_preprocess_image(cls, image_path):
         image = tf.io.read_file(image_path)
-        return cls.preprocess_image(image, preprocess_image_func)
+        return cls.preprocess_image(image)
 
     def parse_label_vec(self, image_path) -> tf.Tensor:
         return label2vec(self.parse_label_text(image_path))
+
+    def parse_label_int_tensor(self, image_path) -> tf.Tensor:
+        return label2int_tensor(self.parse_label_text(image_path))
 
     def parse_label_text(self, image_path) -> str:
         image_name = path.basename(image_path)
         _, label, _ = self.captcha_mgr.decode_labeled_image_filename(image_name)
         return label
 
-    def load_ds(self, images_dir_path, preprocess_image_func=None):
+    def load_ds(self, images_dir_path):
         image_paths = [path.join(images_dir_path, p) for p in os.listdir(images_dir_path)]
-        labels = list(map(lambda p: self.parse_label_vec(p), image_paths))
-        # label_texts = list(map(lambda p: self.parse_label_text(p), image_paths))
-        # path_ds = tf.data.Dataset.from_tensor_slices(image_paths)
+        labels = list(map(lambda p: self.parse_label_int_tensor(p), image_paths))
 
-        def load_and_preprocess_image(image):
-            return self.load_and_preprocess_image(image, preprocess_image_func=preprocess_image_func)
-        images = list(map(lambda p: load_and_preprocess_image(p), image_paths))
-        ds = tf.data.Dataset.from_tensor_slices((images, labels))
+        images = list(map(lambda p: self.load_and_preprocess_image(p), image_paths))
+        images_labels_ds = tf.data.Dataset.from_tensor_slices((images, labels))
+
+        def combine(image, label):
+            return {'image': image, 'label': label}
+
+        ds = images_labels_ds.map(combine)
         ds = ds.shuffle(buffer_size=len(image_paths))
         ds = ds.batch(DLTrainConfig.batch_size).prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
         return ds
@@ -143,16 +151,10 @@ class DataLoader:
 def test_dataloader(mgr: CaptchaManager):
     dl = DataLoader(mgr)
 
-    def change_range(image):
-        image /= 255
-        return 2*image-1
     image_label_ds = dl.load_ds(DLTrainConfig.train_dir_path)
-    validation = dl.load_ds(DLTrainConfig.validation_dir_path)
-    # for image_path, label_text, image, label in image_label_ds.take(4):
-    #     print(image_path, label_text, image, label)
-    for images, label in image_label_ds.take(1):
-        print(images[0], label)
-        plt.imshow(images[0])
+    for image_label_dict in image_label_ds.take(1):
+        print(image_label_dict['image'][0], image_label_dict['label'][0])
+        plt.imshow(image_label_dict['image'][0])
         plt.grid(False)
         plt.show()
 

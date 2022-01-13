@@ -1,18 +1,19 @@
-import os
-import random
-import sys
-import time
+import hashlib
 import logging
-import common
+import os
 import pickle
+import random
 import re
 import shutil
-import hashlib
+import sys
+import time
+from os import path
+from typing import Optional, Dict, Set
 
 from PIL import Image
+
+import common
 from config import Config
-from typing import Optional, Dict, Set
-from os import path
 
 
 def hash_md5(s: bytes):
@@ -173,6 +174,7 @@ class CaptchaManager(object):
                 if original_image_filename in label_filepath:
                     return True
             return False
+
         for hash_value, image_path_set in labeled_hashes.items():
             labeled_image_name_set = {path.basename(p) for p in image_path_set}
             if hash_value not in original_hashes:

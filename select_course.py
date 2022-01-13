@@ -2,17 +2,25 @@
 # -*- coding: utf-8 -*-
 
 import logging
-import common
+import re
+from typing import List, Tuple, Optional
+
+from requests_html import HTML
 from requests_html import HTMLSession
 from retrying import retry
-from config import Config
-from jwxk_base import JWXK_Base
+
+import common
 from captcha import CaptchaManager
-from typing import List, Tuple
-import matplotlib.pyplot as plt
+from config import Config
+from dl_data_process import DataLoader
+from dl_predict import Predictor
+from sep_base import SepBase
+
+common.init_logger()
+Config.init_from_config_path('./config.json')
 
 
-class CourseSelector(JWXK_Base):
+class CourseSelector(SepBase):
     """
         config: dict 选课配置。
             示例：
@@ -30,6 +38,8 @@ class CourseSelector(JWXK_Base):
 
     def __init__(self, captcha_manager: CaptchaManager):
         super().__init__(captcha_manager)
+        self.predictor: Predictor = Predictor(DataLoader(captcha_manager))
+        self.predict_result_regex = re.compile(r'^[0-9][+\-*:][0-9]=\?$')
 
     def __extract_essential_params(self, session: HTMLSession) -> Tuple[str, str, str]:
         # 访问选课页面的主页，获取后续请求中需要带上的query参数。
@@ -55,23 +65,45 @@ class CourseSelector(JWXK_Base):
 
         for dep, courses in dep2courses.items():
             for course in courses:
-                elem = response.html.xpath('//*[@id="regfrm"]/table/tbody/tr[td[4]/a/span[. = "%s"]]/td[1]/input'
-                                           % course.course_code, first=True)
-                course.course_id = elem.attrs["value"] if elem else None
+                elem = response.html.xpath(f"//span[contains(., '{course.course_code}')]",
+                                           first=True)
+                if elem is None:
+                    logging.info(f'未在选课页面查找到课程：{course.course_name}, {course.course_code}，课程可能已经选上，或者配置的课程号与学院无法对应。')
+                    continue
+                course_id_raw = elem.attrs["id"]  # 元素id为：'courseCode_xxxx' 虽然写着courseCode，但是我叫它id。
+                course.course_id = course_id_raw.split('_')[-1]
 
         captcha = response.html.xpath('//*[@id="adminValidateImg"]', first=True)
         captcha_src = "http://jwxk.ucas.ac.cn" + captcha.attrs['src']
         response = session.get(captcha_src, timeout=Config.inst().timeout)
         captcha_path = self._save_captcha(response.content)
-        im = plt.imread(captcha_path)
-        plt.imshow(im)
-        plt.show()
+        # 手动
+        # im = plt.imread(captcha_path)
+        # plt.imshow(im)
+        # plt.show()
+        # v_code = str(input('输入验证码：'))
 
-        v_code = str(input('输入验证码：'))
-
-        # TODO 识别验证码
+        # 自动识别验证码
+        v_code = self.predict_captcha(captcha_path)
+        if v_code is None:
+            raise common.LoopRetryError()
 
         return url_param, csrf_token, v_code
+
+    def predict_captcha(self, captcha_path) -> Optional[str]:
+        pred_result = self.predictor.predict_one(captcha_path)
+        match_result = self.predict_result_regex.match(pred_result)
+        if match_result:
+            pred_result = pred_result.replace(':', '/')
+            pred_result = pred_result[:3]
+            try:
+                return str(int(eval(pred_result)))
+            except SyntaxError as e:
+                logging.error(f'使用深度学习模型识别的结果在eval时报错，预测结果为：{pred_result}，报错为：{e}')
+                return None
+        else:
+            logging.warning(f'使用深度学习模型识别的结果不合法，结果为：{pred_result}')
+            return None
 
     def __make_save_courses_body(self, csrf: str, v_code: str) -> List[Tuple]:
         """
@@ -108,16 +140,21 @@ class CourseSelector(JWXK_Base):
             logging.error("会话失效")
             return
 
-        result = response.html.search("课程[{}]选课成功")
-        if result:
-            logging.info("选课成功：" + result)
+        response_html_doc = response.content.decode('utf-8')
+        html = HTML(html=response_html_doc)
+        results = html.search_all("课程[{}]选课成功")
+        if results:
+            for result in results:
+                logging.info(f"选课成功：{result.fixed}")
         msg = response.html.xpath('//*[@id="loginError"]', first=True)
         if msg is not None:
-            logging.info("选课失败: " + msg.text)
+            logging.info(msg.text)
         raise common.LoopRetryError()
 
     @retry(
-        wait_fixed=1000,
+        stop_max_attempt_number=Config.inst().retry_config['max_attempts'],
+        wait_random_min=1000 * Config.inst().retry_config['interval_seconds_range'][0],
+        wait_random_max=1000 * Config.inst().retry_config['interval_seconds_range'][1],
         retry_on_exception=common.retry_with_log
     )
     def select_courses(self):
@@ -128,7 +165,6 @@ class CourseSelector(JWXK_Base):
 
 
 def main():
-    common.init_logger()
     captcha_manager = CaptchaManager.from_captcha_dir('./captcha')
     cs = CourseSelector(captcha_manager)
     cs.select_courses()

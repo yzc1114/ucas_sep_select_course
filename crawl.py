@@ -1,14 +1,16 @@
-import logging
-import common
+from requests_html import HTMLSession
+from retrying import retry
 
-from jwxk_base import JWXK_Base
+import common
 from captcha import CaptchaManager
 from config import Config
-from retrying import retry
-from requests_html import HTMLSession
+from sep_base import SepBase
+
+common.init_logger()
+Config.init_from_config_path('./config.json')
 
 
-class CaptchaCrawler(JWXK_Base):
+class CaptchaCrawler(SepBase):
     def __init__(self, captcha_manager: CaptchaManager):
         super().__init__(captcha_manager)
 
@@ -17,7 +19,7 @@ class CaptchaCrawler(JWXK_Base):
         self._auth(session)
 
         @retry(
-            stop_max_attempt_number=1000000,
+            stop_max_attempt_number=Config.inst().retry_config['max_attempt'],
             retry_on_exception=common.retry_with_log
         )
         def crawl_image():
@@ -30,8 +32,6 @@ class CaptchaCrawler(JWXK_Base):
 
 
 if __name__ == '__main__':
-    common.init_logger()
-    Config.init_from_config_path('./config.json')
     captcha_mgr = CaptchaManager.from_captcha_dir('./captcha')
     crawler = CaptchaCrawler(captcha_mgr)
     crawler.crawl()

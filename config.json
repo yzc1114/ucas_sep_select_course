@@ -1,4 +1,8 @@
 {
+  "retry": {
+    "max_attempts": 1000000,
+    "interval_seconds_range": [2, 3]
+  },
   "courses": {
     "计算机学院": [
       {
@@ -13,5 +17,6 @@
       }
     ]
   },
-  "captcha_dir_path": "./captcha"
+  "captcha_dir_path": "./captcha",
+  "best_weights_path": "./captcha/checkpoints/CRNN/CRNN_val_0.05318.h5"
 }
