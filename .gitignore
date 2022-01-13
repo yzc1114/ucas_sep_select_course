@@ -1,0 +1,7 @@
+**/original
+**/original.backup
+**/.DS_Store
+**/.idea
+**/__pycache__
+**/venv
+**/*.whl

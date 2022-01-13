@@ -1,0 +1,17 @@
+{
+  "courses": {
+    "计算机学院": [
+      {
+        "course_name": "算法",
+        "course_code": "081202M04003H"
+      }
+    ],
+    "人工智能学院": [
+      {
+        "course_name": "视频处理",
+        "course_code": "081104M05001H"
+      }
+    ]
+  },
+  "captcha_dir_path": "./captcha"
+}
